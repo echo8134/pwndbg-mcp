@@ -29,8 +29,12 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
             args: Optional command-line arguments for the program.
         """
         try:
+            if any(char in path for char in "\r\n\0"):
+                raise ValueError("Binary path must not contain NUL or newline characters.")
+            # MI strings escape quotes and backslashes. Keep other filename characters literal.
+            quoted_path = '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
             gdb = await get_controller()
-            responses = await gdb.execute(f"-file-exec-and-symbols {path}")
+            responses = await gdb.execute(f"-file-exec-and-symbols {quoted_path}")
             if args:
                 responses += await gdb.execute_console(f"set args {args}")
             return format_responses(responses) or f"Loaded {path}"
@@ -534,7 +538,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         """Show function arguments in the current stack frame."""
         try:
             gdb = await get_controller()
-            responses = await gdb.execute("-stack-list-arguments 1 0 0")
+            responses = await gdb.execute_console("info args")
             return format_responses(responses) or "No arguments."
         except Exception as e:
             return format_error(e)
