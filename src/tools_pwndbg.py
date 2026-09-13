@@ -41,17 +41,12 @@ def register_pwndbg_tools(mcp: FastMCP, get_controller: ControllerGetter) -> Non
         """Dereference pointers recursively starting from an address.
 
         Args:
-            address: Start address (hex or expression). Empty defaults to $rsp.
+            address: Start address (hex or expression). Empty defaults to $sp.
             count: Number of entries to display.
         """
         try:
             gdb = await get_controller()
-            parts = ["telescope"]
-            if address:
-                parts.append(address)
-                parts.append(str(count))
-
-            responses = await gdb.execute_console(" ".join(parts))
+            responses = await gdb.execute_console(f"telescope {address or '$sp'} {count}")
             return format_console_output(responses) or "No telescope output."
         except Exception as e:
             return format_error(e)
@@ -76,17 +71,12 @@ def register_pwndbg_tools(mcp: FastMCP, get_controller: ControllerGetter) -> Non
         """Hex dump memory at an address.
 
         Args:
-            address: Memory address (hex or expression). Empty defaults to $rsp.
+            address: Memory address (hex or expression). Empty defaults to $sp.
             count: Number of bytes to dump.
         """
         try:
             gdb = await get_controller()
-            parts = ["hexdump"]
-            if address:
-                parts.append(address)
-                parts.append(str(count))
-
-            responses = await gdb.execute_console(" ".join(parts))
+            responses = await gdb.execute_console(f"hexdump {address or '$sp'} {count}")
             return format_console_output(responses) or "No hexdump output."
         except Exception as e:
             return format_error(e)
@@ -520,12 +510,7 @@ def register_pwndbg_tools(mcp: FastMCP, get_controller: ControllerGetter) -> Non
         """
         try:
             gdb = await get_controller()
-            parts = ["nearpc"]
-            if address:
-                parts.append(address)
-                parts.append(str(count))
-
-            responses = await gdb.execute_console(" ".join(parts))
+            responses = await gdb.execute_console(f"nearpc {address or '$pc'} {count}")
             return format_console_output(responses) or "No nearpc output."
         except Exception as e:
             return format_error(e)
@@ -555,12 +540,13 @@ def register_pwndbg_tools(mcp: FastMCP, get_controller: ControllerGetter) -> Non
             gdb = await get_controller()
             from .gdb_controller import GdbState
 
-            state = gdb.state
-            result = f"GDB state: {state.value}"
-            if state == GdbState.RUNNING:
+            pending_output = ""
+            if gdb.state == GdbState.RUNNING:
                 responses = await gdb.get_responses()
-                if responses:
-                    result += "\n\nPending messages:\n" + format_console_output(responses)
+                pending_output = format_console_output(responses)
+            result = f"GDB state: {gdb.state.value}"
+            if pending_output.strip():
+                result += "\n\nPending messages:\n" + pending_output
             return result
         except Exception as e:
             return format_error(e)
