@@ -8,16 +8,38 @@ from typing import TypeAlias
 from mcp.server.fastmcp import FastMCP
 
 from .gdb_controller import AsyncGdbController
-from .utils import format_error, format_responses
+from .utils import format_error, format_responses, has_response_error
 
 ControllerGetter: TypeAlias = Callable[[], Awaitable[AsyncGdbController]]
+
+
+def _format_command_result(
+    responses: list[dict[str, object]],
+    acknowledgement: str,
+    *prerequisites: list[dict[str, object]],
+) -> str:
+    """Format responses and require a success result from each command before acknowledging success."""
+    batches = (*prerequisites, responses)
+    output = format_responses([response for batch in batches for response in batch])
+    if output.strip():
+        return output
+    if all(
+        any(
+            response.get("type") == "result"
+            and response.get("message") in ("done", "running", "connected")
+            for response in batch
+        )
+        for batch in batches
+    ):
+        return acknowledgement
+    return "No response output; command completion is unconfirmed."
 
 
 def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
     """Register all GDB core tools on the FastMCP instance."""
 
     # ===================================================================
-    # Session Management
+    # Session management
     # ===================================================================
 
     @mcp.tool()
@@ -35,9 +57,12 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
             quoted_path = '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
             gdb = await get_controller()
             responses = await gdb.execute(f"-file-exec-and-symbols {quoted_path}")
+            if has_response_error(responses):
+                return format_responses(responses)
             if args:
-                responses += await gdb.execute_console(f"set args {args}")
-            return format_responses(responses) or f"Loaded {path}"
+                argument_responses = await gdb.execute_console(f"set args {args}")
+                return _format_command_result(argument_responses, f"Loaded {path}", responses)
+            return _format_command_result(responses, f"Loaded {path}")
         except Exception as e:
             return format_error(e)
 
@@ -51,7 +76,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             responses = await gdb.execute(f"-target-attach {pid}")
-            return format_responses(responses) or f"Attached to PID {pid}"
+            return _format_command_result(responses, f"Attached to PID {pid}")
         except Exception as e:
             return format_error(e)
 
@@ -61,7 +86,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             responses = await gdb.execute("-target-detach")
-            return format_responses(responses) or "Detached."
+            return _format_command_result(responses, "Detached.")
         except Exception as e:
             return format_error(e)
 
@@ -76,7 +101,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             responses = await gdb.execute(f"-target-select remote {host}:{port}")
-            return format_responses(responses) or f"Connected to {host}:{port}"
+            return _format_command_result(responses, f"Connected to {host}:{port}")
         except Exception as e:
             return format_error(e)
 
@@ -86,12 +111,12 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             responses = await gdb.execute("-target-disconnect")
-            return format_responses(responses) or "Disconnected."
+            return _format_command_result(responses, "Disconnected.")
         except Exception as e:
             return format_error(e)
 
     # ===================================================================
-    # Execution Control
+    # Execution control
     # ===================================================================
 
     @mcp.tool()
@@ -104,15 +129,19 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         """
         try:
             gdb = await get_controller()
+            prerequisites = []
             if args:
-                await gdb.execute_console(f"set args {args}")
+                argument_responses = await gdb.execute_console(f"set args {args}")
+                if has_response_error(argument_responses):
+                    return format_responses(argument_responses)
+                prerequisites.append(argument_responses)
             cmd = "-exec-run --start" if stop_at_main else "-exec-run"
             responses = await gdb.execute(cmd)
-            if stop_at_main:
-                # Drain to catch the *stopped notification when main() is hit
+            if stop_at_main and not has_response_error(responses):
+                # Collect pending notifications, including a stop at main().
                 drain = await gdb.drain_responses(timeout_sec=5.0)
                 responses.extend(drain)
-            return format_responses(responses) or "Program started."
+            return _format_command_result(responses, "Program started.", *prerequisites)
         except Exception as e:
             return format_error(e)
 
@@ -127,7 +156,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
             gdb = await get_controller()
             cmd = "-exec-continue --reverse" if reverse else "-exec-continue"
             responses = await gdb.execute(cmd)
-            return format_responses(responses) or "Continuing."
+            return _format_command_result(responses, "Continuing.")
         except Exception as e:
             return format_error(e)
 
@@ -141,7 +170,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             responses = await gdb.execute(f"-exec-step {count}")
-            return format_responses(responses) or "Stepped."
+            return _format_command_result(responses, "Stepped.")
         except Exception as e:
             return format_error(e)
 
@@ -155,7 +184,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             responses = await gdb.execute(f"-exec-next {count}")
-            return format_responses(responses) or "Stepped over."
+            return _format_command_result(responses, "Stepped over.")
         except Exception as e:
             return format_error(e)
 
@@ -169,7 +198,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             responses = await gdb.execute(f"-exec-step-instruction {count}")
-            return format_responses(responses) or "Stepped instruction."
+            return _format_command_result(responses, "Stepped instruction.")
         except Exception as e:
             return format_error(e)
 
@@ -183,7 +212,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             responses = await gdb.execute(f"-exec-next-instruction {count}")
-            return format_responses(responses) or "Next instruction."
+            return _format_command_result(responses, "Next instruction.")
         except Exception as e:
             return format_error(e)
 
@@ -193,7 +222,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             responses = await gdb.execute("-exec-finish")
-            return format_responses(responses) or "Function finished."
+            return _format_command_result(responses, "Function finished.")
         except Exception as e:
             return format_error(e)
 
@@ -203,10 +232,10 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             responses = await gdb.execute("-exec-interrupt")
-            # Drain to catch the *stopped notification confirming the interrupt
+            # Collect pending notifications, including the interrupt stop.
             drain = await gdb.drain_responses(timeout_sec=3.0)
             responses.extend(drain)
-            return format_responses(responses) or "Interrupted."
+            return _format_command_result(responses, "Interrupted.")
         except Exception as e:
             return format_error(e)
 
@@ -216,7 +245,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             responses = await gdb.execute_console("kill")
-            return format_responses(responses) or "Program killed."
+            return _format_command_result(responses, "Program killed.")
         except Exception as e:
             return format_error(e)
 
@@ -233,10 +262,9 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         around the target address. If the address doesn't match any
         instruction start, returns a warning string. Otherwise returns "".
 
-        Note: x86-64 has variable-length instructions (up to 15 bytes).
-        If the start of the disassembly window falls mid-instruction,
-        GDB's linear-sweep disassembler may re-sync incorrectly, which
-        could produce a false negative. This is a best-effort heuristic.
+        On x86-64, instructions can span up to 15 bytes. If the window starts
+        inside an instruction, GDB may decode the wrong boundaries and miss
+        an invalid address.
         """
         try:
             addr_str = location.removeprefix("*")
@@ -249,7 +277,6 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
             responses = await gdb.execute(
                 f"-data-disassemble -s {start:#x} -e {end:#x} -- 0"
             )
-            # Parse instruction addresses from the structured response.
             insn_addrs: set[int] = set()
             for resp in responses:
                 payload = resp.get("payload")
@@ -261,7 +288,6 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
                     if insn_addr is not None:
                         insn_addrs.add(int(insn_addr, 0))
             if insn_addrs and addr not in insn_addrs:
-                # Find the instruction that contains this address
                 before = sorted(a for a in insn_addrs if a <= addr)
                 containing = hex(before[-1]) if before else "unknown"
                 return (
@@ -273,8 +299,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
                     f"{', '.join(hex(a) for a in sorted(insn_addrs) if abs(a - addr) <= 16)}"
                 )
         except Exception:
-            # If disassembly fails (no binary loaded, unmapped address),
-            # skip validation silently and let GDB handle it.
+            # Let GDB handle failures such as missing binaries or unmapped addresses.
             pass
         return ""
 
@@ -288,7 +313,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         """Set a breakpoint at the specified location.
 
         Args:
-            location: Where to break — function name, file:line, or *address.
+            location: Function name, file:line, or *address to break at.
             condition: Optional condition expression (break only when true).
             temporary: If true, breakpoint auto-deletes after first hit.
             hardware: If true, use a hardware breakpoint.
@@ -296,12 +321,9 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
 
-            # Validate raw-address software breakpoints land on instruction
-            # boundaries. A breakpoint in the middle of a multi-byte
-            # instruction (e.g. inside a call's displacement) corrupts that
-            # instruction when GDB writes the INT3 byte, causing silent
-            # misbehavior or crashes. Hardware breakpoints use debug
-            # registers and don't modify instructions, so skip the check.
+            # Software breakpoints write an INT3 byte. Check instruction boundaries
+            # to avoid corrupting an instruction. Hardware breakpoints use
+            # debug registers and leave instruction bytes intact.
             warning = ""
             if not hardware and (
                 location.startswith("*0x") or location.startswith("*0X")
@@ -317,7 +339,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
                 parts.extend(["-c", f'"{condition}"'])
             parts.append(location)
             responses = await gdb.execute(" ".join(parts))
-            result = format_responses(responses) or f"Breakpoint set at {location}"
+            result = _format_command_result(responses, f"Breakpoint set at {location}")
             if warning:
                 result = f"WARNING: {warning}\n{result}"
             return result
@@ -334,7 +356,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             responses = await gdb.execute(f"-break-delete {number}")
-            return format_responses(responses) or f"Breakpoint {number} deleted."
+            return _format_command_result(responses, f"Breakpoint {number} deleted.")
         except Exception as e:
             return format_error(e)
 
@@ -348,7 +370,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             responses = await gdb.execute(f"-break-enable {number}")
-            return format_responses(responses) or f"Breakpoint {number} enabled."
+            return _format_command_result(responses, f"Breakpoint {number} enabled.")
         except Exception as e:
             return format_error(e)
 
@@ -362,7 +384,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             responses = await gdb.execute(f"-break-disable {number}")
-            return format_responses(responses) or f"Breakpoint {number} disabled."
+            return _format_command_result(responses, f"Breakpoint {number} disabled.")
         except Exception as e:
             return format_error(e)
 
@@ -393,12 +415,12 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
                 flag = "-a"
             cmd = f"-break-watch {flag} {expression}".strip()
             responses = await gdb.execute(cmd)
-            return format_responses(responses) or f"Watchpoint set on {expression}"
+            return _format_command_result(responses, f"Watchpoint set on {expression}")
         except Exception as e:
             return format_error(e)
 
     # ===================================================================
-    # Data Inspection
+    # Data inspection
     # ===================================================================
 
     @mcp.tool()
@@ -412,7 +434,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             if registers:
-                # Use info registers for named register query
+                # GDB accepts register names through info registers.
                 responses = await gdb.execute_console(f"info registers {registers}")
             else:
                 responses = await gdb.execute("-data-list-register-values x")
@@ -431,7 +453,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             responses = await gdb.execute_console(f"set ${register} = {value}")
-            return format_responses(responses) or f"${register} = {value}"
+            return _format_command_result(responses, f"${register} = {value}")
         except Exception as e:
             return format_error(e)
 
@@ -442,7 +464,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         Args:
             address: Memory address (hex like 0x400000 or expression).
             count: Number of bytes to read (default 64).
-            format: Display format — 'x' hex (default), or use hexdump.
+            format: Display format. Use 'x' for hex (default), or use hexdump.
         """
         try:
             gdb = await get_controller()
@@ -462,7 +484,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             responses = await gdb.execute(f"-data-write-memory-bytes {address} {data}")
-            return format_responses(responses) or f"Wrote to {address}"
+            return _format_command_result(responses, f"Wrote to {address}")
         except Exception as e:
             return format_error(e)
 
@@ -478,7 +500,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             if count > 0:
-                # Use console disassemble for instruction count
+                # The console x command accepts an instruction count.
                 responses = await gdb.execute_console(f"x/{count}i {start}")
             elif end:
                 responses = await gdb.execute(f"-data-disassemble -s {start} -e {end} -- 0")
@@ -553,7 +575,7 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             responses = await gdb.execute(f"-stack-select-frame {number}")
-            return format_responses(responses) or f"Selected frame {number}."
+            return _format_command_result(responses, f"Selected frame {number}.")
         except Exception as e:
             return format_error(e)
 
@@ -581,12 +603,12 @@ def register_gdb_tools(mcp: FastMCP, get_controller: ControllerGetter) -> None:
         try:
             gdb = await get_controller()
             responses = await gdb.execute(f"-thread-select {thread_id}")
-            return format_responses(responses) or f"Switched to thread {thread_id}."
+            return _format_command_result(responses, f"Switched to thread {thread_id}.")
         except Exception as e:
             return format_error(e)
 
     # ===================================================================
-    # Escape Hatch
+    # Raw commands
     # ===================================================================
 
     @mcp.tool()

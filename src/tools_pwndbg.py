@@ -17,7 +17,7 @@ def register_pwndbg_tools(mcp: FastMCP, get_controller: ControllerGetter) -> Non
     """Register pwndbg extension tools on the FastMCP instance."""
 
     # ===================================================================
-    # Memory Inspection
+    # Memory inspection
     # ===================================================================
 
     @mcp.tool()
@@ -119,14 +119,12 @@ def register_pwndbg_tools(mcp: FastMCP, get_controller: ControllerGetter) -> Non
         """Probe memory for pointers to known regions (heap, stack, libc, etc.).
 
         Args:
-            address: Start address to probe. Empty defaults to current context.
-            count: Number of bytes to probe.
+            address: Start address to probe. Empty defaults to $sp.
+            count: Number of bytes to probe. Zero or less uses pwndbg's default.
         """
         try:
             gdb = await get_controller()
-            parts = ["probeleak"]
-            if address:
-                parts.append(address)
+            parts = ["probeleak", address or "$sp"]
             if count > 0:
                 parts.append(str(count))
             responses = await gdb.execute_console(" ".join(parts))
@@ -316,7 +314,7 @@ def register_pwndbg_tools(mcp: FastMCP, get_controller: ControllerGetter) -> Non
             return format_error(e)
 
     # ===================================================================
-    # Binary Info
+    # Binary information
     # ===================================================================
 
     @mcp.tool()
@@ -380,7 +378,7 @@ def register_pwndbg_tools(mcp: FastMCP, get_controller: ControllerGetter) -> Non
             return format_error(e)
 
     # ===================================================================
-    # Exploit Helpers
+    # Exploit helpers
     # ===================================================================
 
     @mcp.tool()
@@ -497,7 +495,7 @@ def register_pwndbg_tools(mcp: FastMCP, get_controller: ControllerGetter) -> Non
             return format_error(e)
 
     # ===================================================================
-    # Execution / Disassembly
+    # Execution and disassembly
     # ===================================================================
 
     @mcp.tool()
@@ -506,7 +504,8 @@ def register_pwndbg_tools(mcp: FastMCP, get_controller: ControllerGetter) -> Non
 
         Args:
             address: Address or symbol to disassemble around. Empty defaults to $pc.
-            count: Number of instructions to display.
+            count: Number of instruction lines from the address onward.
+                   Pwndbg may also show preceding instructions.
         """
         try:
             gdb = await get_controller()
@@ -517,14 +516,15 @@ def register_pwndbg_tools(mcp: FastMCP, get_controller: ControllerGetter) -> Non
 
     @mcp.tool()
     async def emulate(count: int = 1) -> str:
-        """Emulate execution of instructions without actually running them.
+        """Show emulated disassembly from $pc without running the inferior.
 
         Args:
-            count: Number of instructions to emulate.
+            count: Number of instruction lines from $pc onward.
+                   Pwndbg may also show earlier instructions from its cache.
         """
         try:
             gdb = await get_controller()
-            responses = await gdb.execute_console(f"emulate {count}")
+            responses = await gdb.execute_console(f"emulate $pc {count}")
             return format_console_output(responses) or "No emulate output."
         except Exception as e:
             return format_error(e)

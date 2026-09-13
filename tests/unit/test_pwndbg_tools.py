@@ -30,6 +30,9 @@ def tool_session():
         ("nearpc", "", 1, "nearpc $pc 1"),
         ("nearpc", "", 3, "nearpc $pc 3"),
         ("nearpc", "main", 2, "nearpc main 2"),
+        ("probeleak", "", 0, "probeleak $sp"),
+        ("probeleak", "", 32, "probeleak $sp 32"),
+        ("probeleak", "0x1234", 16, "probeleak 0x1234 16"),
     ],
 )
 async def test_inspection_forwards_address_and_count(tool_session, tool, address, count, command):
@@ -80,3 +83,27 @@ async def test_status_omits_blank_pending_messages(tool_session):
     ]
     content, _ = await mcp.call_tool("pwndbg_status", {})
     assert content[0].text == "GDB state: running"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [1, 3, 255, 256, 1024])
+async def test_emulate_count_is_not_an_address(tool_session, count):
+    mcp, gdb = tool_session
+    await mcp.call_tool("emulate", {"count": count})
+    gdb.execute_console.assert_awaited_once_with(f"emulate $pc {count}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool,arguments", [
+    ("telescope", {}), ("hexdump_memory", {}), ("nearpc", {}), ("emulate", {}),
+])
+@pytest.mark.parametrize("record,diagnostic", [
+    ({"type": "result", "message": "error", "payload": {"msg": "Invalid address"}}, "Invalid address"),
+    ({"type": "error", "payload": "GDB not started. Load a binary first."}, "GDB not started"),
+])
+async def test_inspection_errors_reach_mcp(tool_session, tool, arguments, record, diagnostic):
+    mcp, gdb = tool_session
+    gdb.execute_console.return_value = [record]
+    content, _ = await mcp.call_tool(tool, arguments)
+    assert content[0].text.startswith("Error: ")
+    assert diagnostic in content[0].text

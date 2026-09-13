@@ -95,3 +95,27 @@ async def test_stack_args_follows_selected_frame(tool_session, program):
     arguments = await call_tool(mcp, "stack_args")
     assert "outer_value" in arguments, arguments
     assert "inner_value" not in arguments, arguments
+
+
+@pytest.mark.asyncio
+async def test_invalid_inspection_and_successful_control(tool_session, program):
+    mcp, _ = tool_session
+    await call_tool(mcp, "load_binary", path=str(program))
+    invalid = await call_tool(mcp, "evaluate_expression", expression="phase1_missing_symbol")
+    assert invalid.startswith("Error: "), invalid
+    assert "phase1_missing_symbol" in invalid, invalid
+    valid = await call_tool(mcp, "evaluate_expression", expression="sizeof(int)")
+    assert valid == "{'value': '4'}", valid
+
+
+@pytest.mark.asyncio
+async def test_missing_executable_does_not_change_arguments(tool_session, tmp_path):
+    mcp, _ = tool_session
+    await call_tool(mcp, "execute_command", command="set args original")
+    missing = tmp_path / "does-not-exist"
+    result = await call_tool(mcp, "load_binary", path=str(missing), args="replacement")
+    assert result.startswith("Error: "), result
+    assert str(missing) in result, result
+    arguments = await call_tool(mcp, "execute_command", command="show args")
+    assert '"original"' in arguments, arguments
+    assert "replacement" not in arguments, arguments
